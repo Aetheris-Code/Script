@@ -23,7 +23,7 @@ if getgenv().RickPortalCleanup then
 end
 
 -- ── Constants ─────────────────────────────────────────────────────────────────
-local SCRIPT_URL      = "https://gist.githubusercontent.com/supersayingod902-a11y/a14443f587a465e145a71fd4b420ab70/raw"
+local SCRIPT_URL = "https://raw.githubusercontent.com/Aetheris-Code/Script/refs/heads/main/Portal"
 local PORTAL_AUDIO_ID = "rbxassetid://756847338"
 local VOICE_AUDIO_IDS = {
     ["Rick C137"]  = "rbxassetid://1701569142",
