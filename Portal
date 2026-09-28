@@ -255,7 +255,7 @@ end
 local Window = MacLib:Window({
     Title                  = "Apex Hub",
     Subtitle               = "Free | 1.20",
-    Size                   = UDim2.fromOffset(650, 500),
+    Size                   = UDim2.fromOffset(440,440),
     DragStyle              = 2,
     DisabledWindowControls = {},
     ShowUserInfo           = true,
@@ -316,6 +316,76 @@ MainSection:Dropdown({
         selectedTargetName = value
     end,
 }, "Dropdown")
+
+MainSection:Button({
+    Name     = "TP to Player",
+    Callback = function()
+        if not selectedTargetName or selectedTargetName == "" then
+            Window:Notify({ Title = "Apex Hub", Description = "Select a player first!", Lifetime = 3 })
+            return
+        end
+
+        local targetPlayer = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.DisplayName == selectedTargetName or p.Name == selectedTargetName then
+                targetPlayer = p
+                break
+            end
+        end
+
+        if not targetPlayer then
+            Window:Notify({ Title = "Apex Hub", Description = "Player not found!", Lifetime = 3 })
+            return
+        end
+
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        wipeAllPortals()
+        local tpPortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
+        Window:Notify({ Title = "Apex Hub", Description = "Walk into the portal!", Lifetime = 4 })
+
+        local touched = false
+        tpPortal.Touched:Connect(function(hit)
+            if touched or hit.Parent ~= char then return end
+            touched = true
+            playTeleportVoice()
+            Window:Notify({ Title = "Apex Hub", Description = "Jumping dimensions...", Lifetime = 3 })
+
+            task.spawn(function()
+                local tChar = targetPlayer.Character
+                if not tChar then
+                    Window:Notify({ Title = "Apex Hub", Description = "Target doesn't exist!", Lifetime = 3 })
+                    return
+                end
+
+                local tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
+                if tRoot then
+                    root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
+                else
+                    local pivot   = tChar:GetPivot()
+                    root.CFrame   = pivot * CFrame.new(0, 5, 0)
+                    root.Anchored = true
+                    pcall(function() player:RequestStreamAroundAsync(pivot.Position) end)
+                    local t = tick() + 5
+                    while tick() < t do
+                        tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
+                        if tRoot then break end
+                        task.wait(0.05)
+                    end
+                    if tRoot then
+                        root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
+                    end
+                    root.Anchored = false
+                end
+            end)
+
+            task.wait(1)
+            wipeAllPortals()
+        end)
+    end,
+})
 
 MainSection:Toggle({
     Name     = "Portal Gun Mode",
@@ -418,76 +488,6 @@ MainSection:Button({
     end,
 })
 
-MainSection:Button({
-    Name     = "TP to Player",
-    Callback = function()
-        if not selectedTargetName or selectedTargetName == "" then
-            Window:Notify({ Title = "Apex Hub", Description = "Select a player first!", Lifetime = 3 })
-            return
-        end
-
-        local targetPlayer = nil
-        for _, p in ipairs(Players:GetPlayers()) do
-            if p.DisplayName == selectedTargetName or p.Name == selectedTargetName then
-                targetPlayer = p
-                break
-            end
-        end
-
-        if not targetPlayer then
-            Window:Notify({ Title = "Apex Hub", Description = "Player not found!", Lifetime = 3 })
-            return
-        end
-
-        local char = player.Character
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if not root then return end
-
-        wipeAllPortals()
-        local tpPortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
-        Window:Notify({ Title = "Apex Hub", Description = "Walk into the portal!", Lifetime = 4 })
-
-        local touched = false
-        tpPortal.Touched:Connect(function(hit)
-            if touched or hit.Parent ~= char then return end
-            touched = true
-            playTeleportVoice()
-            Window:Notify({ Title = "Apex Hub", Description = "Jumping dimensions...", Lifetime = 3 })
-
-            task.spawn(function()
-                local tChar = targetPlayer.Character
-                if not tChar then
-                    Window:Notify({ Title = "Apex Hub", Description = "Target doesn't exist!", Lifetime = 3 })
-                    return
-                end
-
-                local tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
-                if tRoot then
-                    root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
-                else
-                    local pivot   = tChar:GetPivot()
-                    root.CFrame   = pivot * CFrame.new(0, 5, 0)
-                    root.Anchored = true
-                    pcall(function() player:RequestStreamAroundAsync(pivot.Position) end)
-                    local t = tick() + 5
-                    while tick() < t do
-                        tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
-                        if tRoot then break end
-                        task.wait(0.05)
-                    end
-                    if tRoot then
-                        root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
-                    end
-                    root.Anchored = false
-                end
-            end)
-
-            task.wait(1)
-            wipeAllPortals()
-        end)
-    end,
-})
-
 -- ════════════════════════════════════════════════════════════════════════════════
 --  SETTING TAB
 -- ════════════════════════════════════════════════════════════════════════════════
@@ -574,17 +574,33 @@ local rwConn = RunService.RenderStepped:Connect(function()
 end)
 table.insert(connections, rwConn)
 
-local mouseConn = UserInputService.InputBegan:Connect(function(input, gp)
-    if gp or not portalGunActive then return end
-    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+-- ── Mobile Touch Portal Gun ───────────────────────────────────────────────────
+local touchConn = UserInputService.TouchTapInWorld:Connect(function(position, gameProcessed)
+    if gameProcessed then return end
+    if not portalGunActive then return end
     if isSpawning then return end
 
-    local mouse   = player:GetMouse()
-    local hitPart = mouse.Target
-    local hitPos  = mouse.Hit
-    local char    = player.Character
-    local root    = char and char:FindFirstChild("HumanoidRootPart")
-    if not (hitPos and root) then return end
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    -- Raycast จาก Touch position ลงไปใน World
+    local unitRay = camera:ScreenPointToRay(position.X, position.Y)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = { char, unpack(activePortals) }
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    local rayResult = workspace:Raycast(unitRay.Origin, unitRay.Direction * 1000, rayParams)
+
+    local hitPos  = nil
+    local hitPart = nil
+
+    if rayResult then
+        hitPos  = rayResult.Position
+        hitPart = rayResult.Instance
+    end
+
+    if not hitPos then return end
 
     isSpawning = true
     wipeAllPortals()
@@ -596,15 +612,15 @@ local mouseConn = UserInputService.InputBegan:Connect(function(input, gp)
         voidPlatform              = Instance.new("Part")
         voidPlatform.Name         = "VoidBaseplate"
         voidPlatform.Size         = Vector3.new(60, 1, 60)
-        voidPlatform.Position     = hitPos.Position
+        voidPlatform.Position     = hitPos
         voidPlatform.Anchored     = true
         voidPlatform.Transparency = 1
         voidPlatform.CanCollide   = true
         voidPlatform.Parent       = workspace
-        platformY                 = hitPos.Position.Y
+        platformY                 = hitPos.Y
     end
 
-    local exitPortal     = createPortalInstance(CFrame.lookAt(hitPos.Position + Vector3.new(0, 3.5, 0), root.Position))
+    local exitPortal     = createPortalInstance(CFrame.lookAt(hitPos + Vector3.new(0, 3.5, 0), root.Position))
     local entrancePortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
 
     entrancePortal.Touched:Connect(function(hit)
@@ -630,7 +646,9 @@ local mouseConn = UserInputService.InputBegan:Connect(function(input, gp)
     task.wait(0.35)
     isSpawning = false
 end)
-table.insert(connections, mouseConn)
+table.insert(connections, touchConn)
+
+
 
 -- ════════════════════════════════════════════════════════════════════════════════
 --  Cleanup
