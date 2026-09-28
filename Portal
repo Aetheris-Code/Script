@@ -1,0 +1,646 @@
+local MacLib = loadstring(game:HttpGet("https://github.com/biggaboy212/Maclib/releases/latest/download/maclib.txt"))()
+
+-- ── Services ──────────────────────────────────────────────────────────────────
+local Players          = game:GetService("Players")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local TweenService     = game:GetService("TweenService")
+local CollectionService= game:GetService("CollectionService")
+local UserInputService = game:GetService("UserInputService")
+local RunService       = game:GetService("RunService")
+
+local player   = Players.LocalPlayer
+local camera   = workspace.CurrentCamera
+
+local queue_on_tp = queue_on_teleport
+    or (syn and syn.queue_on_teleport)
+    or (fluxus and fluxus.queue_on_teleport)
+    or function() end
+
+-- ── Cleanup previous instance ─────────────────────────────────────────────────
+if getgenv().RickPortalCleanup then
+    getgenv().RickPortalCleanup()
+end
+
+-- ── Constants ─────────────────────────────────────────────────────────────────
+local SCRIPT_URL      = "https://gist.githubusercontent.com/supersayingod902-a11y/a14443f587a465e145a71fd4b420ab70/raw"
+local PORTAL_AUDIO_ID = "rbxassetid://756847338"
+local VOICE_AUDIO_IDS = {
+    ["Rick C137"]  = "rbxassetid://1701569142",
+    ["Evil Morty"] = "rbxassetid://95895699912526",
+}
+local currentVoiceId = "rbxassetid://1701569142"
+local PORTAL_TAG     = "RickPortal_C137_" .. player.UserId
+
+-- ── State ─────────────────────────────────────────────────────────────────────
+local activePortals     = {}
+local connections       = {}
+local voidPlatform      = nil
+local portalDuration    = 6
+local currentColorIndex = 1
+local airWalkOn         = false
+local platformY         = 0
+local portalGunActive   = false
+local isTeleporting     = false
+local isSpawning        = false
+local isHopping         = false
+local TELEPORT_COOLDOWN = 1.5
+local musicSound        = nil
+local musicPosition     = 0  -- เก็บตำแหน่งเพลงที่หยุดค้างไว้
+
+local colors = {
+    { Name = "Green (Rick)", Color = Color3.fromRGB(50, 255, 80),  AssetId = "90557902399922"  },
+    { Name = "Blue",         Color = Color3.fromRGB(0, 140, 255),  AssetId = "111253766381478" },
+    { Name = "Yellow",       Color = Color3.fromRGB(255, 220, 0),  AssetId = "84682671659197"  },
+}
+
+-- ── Air Walk Platform ─────────────────────────────────────────────────────────
+local platform      = Instance.new("Part")
+platform.Name       = "AirWalkPlatform"
+platform.Anchored   = true
+platform.Size       = Vector3.new(6, 1, 6)
+platform.Transparency = 1
+platform.CanCollide = false
+platform.Parent     = workspace
+
+-- ── Music Helpers ─────────────────────────────────────────────────────────────
+-- ติดเสียงไว้กับกล้อง = ได้ยินเต็มๆ ไม่ว่าจะซูมแค่ไหน
+local function createMusicOnCamera(startPos)
+    -- ลบอันเก่าออกก่อน
+    if musicSound then
+        musicPosition = musicSound.TimePosition
+        musicSound:Stop()
+        musicSound:Destroy()
+        musicSound = nil
+    end
+
+    local snd          = Instance.new("Sound")
+    snd.SoundId        = "rbxassetid://95895699912526"
+    snd.Volume         = 1
+    snd.Looped         = true
+    snd.TimePosition   = startPos or 0
+    snd.Parent         = camera   -- ← ติดกล้อง ได้ยินเสมอ
+    snd:Play()
+    musicSound = snd
+end
+
+local function stopMusic()
+    if musicSound then
+        musicPosition = musicSound.TimePosition
+        musicSound:Stop()
+        musicSound:Destroy()
+        musicSound = nil
+    end
+end
+
+-- ── Helpers ───────────────────────────────────────────────────────────────────
+local function wipeAllPortals()
+    for _, p in ipairs(activePortals) do
+        if p and p.Parent then p:Destroy() end
+    end
+    table.clear(activePortals)
+    for _, p in ipairs(CollectionService:GetTagged(PORTAL_TAG)) do
+        if p then p:Destroy() end
+    end
+    if voidPlatform and voidPlatform.Parent then
+        voidPlatform:Destroy()
+        voidPlatform = nil
+    end
+end
+
+wipeAllPortals()
+
+local function playTeleportVoice()
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+
+    local sfx       = Instance.new("Sound")
+    sfx.SoundId     = currentVoiceId
+    sfx.Volume      = 1
+    sfx.Parent      = camera  -- ← เสียงวาปก็ติดกล้องด้วย
+    sfx:Play()
+
+    task.spawn(function()
+        if currentVoiceId == VOICE_AUDIO_IDS["Evil Morty"] then
+            task.wait(1.5)
+            sfx:Stop()
+            sfx:Destroy()
+        else
+            sfx.Ended:Wait()
+            sfx:Destroy()
+        end
+    end)
+end
+
+local function createPortalInstance(cframe)
+    local pos = cframe.Position
+    local _, yRot, _ = cframe:ToOrientation()
+    local vCFrame = CFrame.new(pos) * CFrame.Angles(0, yRot, 0)
+
+    local portalPart = Instance.new("Part")
+    portalPart.Size         = Vector3.new(0.1, 0.1, 0.1)
+    portalPart.CFrame       = vCFrame
+    portalPart.Anchored     = true
+    portalPart.CanCollide   = false
+    portalPart.Transparency = 1
+    portalPart.Parent       = workspace
+
+    CollectionService:AddTag(portalPart, PORTAL_TAG)
+    table.insert(activePortals, portalPart)
+
+    local sfx              = Instance.new("Sound")
+    sfx.SoundId            = PORTAL_AUDIO_ID
+    sfx.Volume             = 3
+    sfx.RollOffMaxDistance = 150
+    sfx.Parent             = portalPart
+    sfx:Play()
+
+    local colorData = colors[currentColorIndex]
+    local selColor  = colorData.Color
+    local texUrl    = "rbxthumb://type=Asset&id=" .. colorData.AssetId .. "&w=420&h=420"
+
+    local light          = Instance.new("PointLight")
+    light.Color          = selColor
+    light.Range          = 15
+    light.Brightness     = 3
+    light.Parent         = portalPart
+
+    local sparks                 = Instance.new("ParticleEmitter")
+    sparks.Color                 = ColorSequence.new(selColor)
+    sparks.Size                  = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.3), NumberSequenceKeypoint.new(1, 0) })
+    sparks.Lifetime              = NumberRange.new(0.5, 1.2)
+    sparks.Rate                  = 25
+    sparks.Speed                 = NumberRange.new(3, 7)
+    sparks.SpreadAngle           = Vector2.new(360, 360)
+    sparks.EmissionDirection     = Enum.NormalId.Front
+    sparks.Parent                = portalPart
+
+    local function makeFace(face)
+        local sg             = Instance.new("SurfaceGui")
+        sg.Face              = face
+        sg.SizingMode        = Enum.SurfaceGuiSizingMode.PixelsPerStud
+        sg.PixelsPerStud     = 50
+        sg.LightInfluence    = 0
+        sg.Parent            = portalPart
+
+        local img                    = Instance.new("ImageLabel")
+        img.Size                     = UDim2.new(1, 0, 1, 0)
+        img.BackgroundTransparency   = 1
+        img.Image                    = texUrl
+        img.ImageColor3              = Color3.fromRGB(255, 255, 255)
+        img.AnchorPoint              = Vector2.new(0.5, 0.5)
+        img.Position                 = UDim2.new(0.5, 0, 0.5, 0)
+        img.Parent                   = sg
+
+        local c            = Instance.new("UICorner")
+        c.CornerRadius     = UDim.new(0.5, 0)
+        c.Parent           = img
+        return img
+    end
+
+    local fFront = makeFace(Enum.NormalId.Front)
+    local bFront = makeFace(Enum.NormalId.Back)
+
+    TweenService:Create(portalPart, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), { Size = Vector3.new(7, 7, 0.1) }):Play()
+
+    task.spawn(function()
+        while portalPart and portalPart.Parent do
+            local r         = (fFront.Rotation + 8) % 360
+            fFront.Rotation = r
+            bFront.Rotation = r
+            task.wait(0.03)
+        end
+    end)
+
+    task.delay(portalDuration, function()
+        if portalPart and portalPart.Parent then portalPart:Destroy() end
+    end)
+
+    return portalPart
+end
+
+local function smartJumpToCFrame(root, targetCFrame)
+    local targetPos = targetCFrame.Position
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = { player.Character, unpack(activePortals) }
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    if airWalkOn then
+        root.CFrame = targetCFrame
+        platformY   = voidPlatform and voidPlatform.Position.Y or (targetPos.Y - 3.4)
+        return
+    end
+
+    local hit = workspace:Raycast(targetPos + Vector3.new(0, 5, 0), Vector3.new(0, -1000, 0), rayParams)
+    if hit and hit.Instance then
+        root.CFrame = targetCFrame
+        return
+    end
+
+    root.CFrame   = targetCFrame * CFrame.new(0, 4, 0)
+    root.Anchored = true
+    pcall(function() player:RequestStreamAroundAsync(targetPos) end)
+
+    local t = tick() + 2.5
+    while tick() < t do
+        local r2 = workspace:Raycast(root.Position, Vector3.new(0, -1000, 0), rayParams)
+        if r2 and r2.Instance then break end
+        task.wait(0.05)
+    end
+    if root and root.Parent then root.Anchored = false end
+end
+
+-- ── MacLib Window ─────────────────────────────────────────────────────────────
+local Window = MacLib:Window({
+    Title                  = "Apex Hub",
+    Subtitle               = "Free | 1.20",
+    Size                   = UDim2.fromOffset(650, 500),
+    DragStyle              = 2,
+    DisabledWindowControls = {},
+    ShowUserInfo           = true,
+    Keybind                = Enum.KeyCode.Y,
+    AcrylicBlur            = true,
+})
+
+Window:Notify({
+    Title       = "Apex Hub",
+    Description = "Hello, Welcome to Apex Hub!",
+    Lifetime    = 5,
+})
+
+Window:Dialog({
+    Title       = "Apex Hub",
+    Description = "Welcome to Apex Hub!",
+    Buttons = {
+        { Name = "Confirm", Callback = function() print("Confirmed!") end },
+        { Name = "Cancel" },
+    },
+})
+
+-- ── Tab Groups & Tabs ─────────────────────────────────────────────────────────
+local MainTabGroup    = Window:TabGroup()
+local SettingTabGroup = Window:TabGroup()
+
+local MainTab    = MainTabGroup:Tab({ Name = "Main"    })
+local SettingTab = SettingTabGroup:Tab({ Name = "Setting" })
+
+-- ── Sections ──────────────────────────────────────────────────────────────────
+local MainSection    = MainTab:Section({ Side = "Left" })
+local SettingSection = SettingTab:Section({ Side = "Left" })
+
+-- ════════════════════════════════════════════════════════════════════════════════
+--  MAIN TAB
+-- ════════════════════════════════════════════════════════════════════════════════
+
+local function getPlayerNames()
+    local names = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= player then
+            table.insert(names, p.DisplayName)
+        end
+    end
+    return names
+end
+
+local selectedTargetName = nil
+
+MainSection:Dropdown({
+    Name     = "Select Player",
+    Search   = true,
+    Multi    = false,
+    Required = false,
+    Options  = getPlayerNames(),
+    Default  = {},
+    Callback = function(value)
+        selectedTargetName = value
+    end,
+}, "Dropdown")
+
+MainSection:Toggle({
+    Name     = "Portal Gun Mode",
+    Default  = false,
+    Callback = function(value)
+        portalGunActive = value
+        if not portalGunActive then
+            wipeAllPortals()
+        end
+    end,
+}, "PortalGunToggle")
+
+MainSection:Toggle({
+    Name     = "Air Walk",
+    Default  = false,
+    Callback = function(value)
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            platformY = root.Position.Y - 3.4
+        end
+        airWalkOn           = value
+        platform.CanCollide = value
+    end,
+}, "AirWalkToggle")
+
+MainSection:Button({
+    Name     = "Refresh Players",
+    Callback = function()
+        Libs["Dropdown"]:SetOptions(getPlayerNames())
+    end,
+})
+
+MainSection:Button({
+    Name     = "Server Hop (Walk In)",
+    Callback = function()
+        if isHopping then
+            isHopping = false
+            wipeAllPortals()
+            return
+        end
+
+        isHopping = true
+
+        task.spawn(function()
+            local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
+            local req = request or http_request or (syn and syn.request)
+
+            if not req then
+                isHopping = false
+                Window:Notify({ Title = "Apex Hub", Description = "HTTP Blocked!", Lifetime = 3 })
+                return
+            end
+
+            local response     = req({ Url = url, Method = "GET" })
+            local targetServer = nil
+
+            if response and response.Body then
+                local ok, data = pcall(HttpService.JSONDecode, HttpService, response.Body)
+                if ok and data and data.data then
+                    for _, srv in ipairs(data.data) do
+                        if srv.playing < srv.maxPlayers and srv.id ~= game.JobId then
+                            targetServer = srv.id
+                            break
+                        end
+                    end
+                end
+            end
+
+            if not targetServer then
+                isHopping = false
+                Window:Notify({ Title = "Apex Hub", Description = "No server found!", Lifetime = 3 })
+                return
+            end
+
+            local char = player.Character
+            local root = char and char:FindFirstChild("HumanoidRootPart")
+            if not root then isHopping = false; return end
+
+            wipeAllPortals()
+            local hopPortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
+            Window:Notify({ Title = "Apex Hub", Description = "Walk into the portal!", Lifetime = 4 })
+
+            local touched = false
+            hopPortal.Touched:Connect(function(hit)
+                if touched or not isHopping then return end
+                if hit.Parent ~= player.Character then return end
+                touched = true
+                playTeleportVoice()
+                Window:Notify({ Title = "Apex Hub", Description = "Hopping server...", Lifetime = 3 })
+
+                if SCRIPT_URL ~= "" then
+                    pcall(function()
+                        queue_on_tp('loadstring(game:HttpGet("' .. SCRIPT_URL .. '"))()')
+                    end)
+                end
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, targetServer, player)
+            end)
+        end)
+    end,
+})
+
+MainSection:Button({
+    Name     = "TP to Player",
+    Callback = function()
+        if not selectedTargetName or selectedTargetName == "" then
+            Window:Notify({ Title = "Apex Hub", Description = "Select a player first!", Lifetime = 3 })
+            return
+        end
+
+        local targetPlayer = nil
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p.DisplayName == selectedTargetName or p.Name == selectedTargetName then
+                targetPlayer = p
+                break
+            end
+        end
+
+        if not targetPlayer then
+            Window:Notify({ Title = "Apex Hub", Description = "Player not found!", Lifetime = 3 })
+            return
+        end
+
+        local char = player.Character
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+
+        wipeAllPortals()
+        local tpPortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
+        Window:Notify({ Title = "Apex Hub", Description = "Walk into the portal!", Lifetime = 4 })
+
+        local touched = false
+        tpPortal.Touched:Connect(function(hit)
+            if touched or hit.Parent ~= char then return end
+            touched = true
+            playTeleportVoice()
+            Window:Notify({ Title = "Apex Hub", Description = "Jumping dimensions...", Lifetime = 3 })
+
+            task.spawn(function()
+                local tChar = targetPlayer.Character
+                if not tChar then
+                    Window:Notify({ Title = "Apex Hub", Description = "Target doesn't exist!", Lifetime = 3 })
+                    return
+                end
+
+                local tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
+                if tRoot then
+                    root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
+                else
+                    local pivot   = tChar:GetPivot()
+                    root.CFrame   = pivot * CFrame.new(0, 5, 0)
+                    root.Anchored = true
+                    pcall(function() player:RequestStreamAroundAsync(pivot.Position) end)
+                    local t = tick() + 5
+                    while tick() < t do
+                        tRoot = tChar:FindFirstChild("HumanoidRootPart") or tChar.PrimaryPart
+                        if tRoot then break end
+                        task.wait(0.05)
+                    end
+                    if tRoot then
+                        root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -4)
+                    end
+                    root.Anchored = false
+                end
+            end)
+
+            task.wait(1)
+            wipeAllPortals()
+        end)
+    end,
+})
+
+-- ════════════════════════════════════════════════════════════════════════════════
+--  SETTING TAB
+-- ════════════════════════════════════════════════════════════════════════════════
+
+SettingSection:Dropdown({
+    Name     = "Voice Sound",
+    Search   = false,
+    Multi    = false,
+    Required = true,
+    Options  = {"Rick C137", "Evil Morty"},
+    Default  = {"Rick C137"},
+    Callback = function(value)
+        currentVoiceId = VOICE_AUDIO_IDS[value]
+    end,
+}, "VoiceDropdown")
+
+-- ── Evil Morty Music Toggle ───────────────────────────────────────────────────
+SettingSection:Toggle({
+    Name     = "Evil Morty Music",
+    Default  = false,
+    Callback = function(value)
+        if value then
+            -- เปิดต่อจากท่อนที่หยุดค้างไว้
+            createMusicOnCamera(musicPosition)
+            Window:Notify({ Title = "Apex Hub", Description = "Evil Morty theme playing!", Lifetime = 3 })
+        else
+            -- หยุดแต่จำตำแหน่งไว้
+            stopMusic()
+        end
+    end,
+}, "MusicToggle")
+
+-- ── Reset Music Button ────────────────────────────────────────────────────────
+SettingSection:Button({
+    Name     = "Reset Music",
+    Callback = function()
+        musicPosition = 0  -- รีเซ็ตตำแหน่งเป็นต้นเพลง
+        if musicSound then
+            -- ถ้าเพลงกำลังเล่นอยู่ ให้เริ่มใหม่ตั้งแต่ต้นเลย
+            createMusicOnCamera(0)
+            Window:Notify({ Title = "Apex Hub", Description = "Music restarted!", Lifetime = 3 })
+        else
+            Window:Notify({ Title = "Apex Hub", Description = "Position reset — toggle to play!", Lifetime = 3 })
+        end
+    end,
+})
+
+SettingSection:Colorpicker({
+    Name    = "Select Color",
+    Default = Color3.fromRGB(255, 255, 0),
+    Alpha   = 0,
+    Callback = function(color, alpha)
+        local closest, bestDist = 1, math.huge
+        for i, c in ipairs(colors) do
+            local dr   = color.R - c.Color.R
+            local dg   = color.G - c.Color.G
+            local db   = color.B - c.Color.B
+            local dist = dr*dr + dg*dg + db*db
+            if dist < bestDist then
+                bestDist = dist
+                closest  = i
+            end
+        end
+        currentColorIndex = closest
+    end,
+}, "ColorPicker")
+
+SettingSection:Label({ Text = "Green, Yellow, Blue Only!" })
+SettingSection:Label({ Text = "255,255,0 = Yellow | 0,140,255 = Blue | 50,255,80 = Green" })
+
+-- ════════════════════════════════════════════════════════════════════════════════
+--  Runtime Loops
+-- ════════════════════════════════════════════════════════════════════════════════
+
+local rwConn = RunService.RenderStepped:Connect(function()
+    local char = player.Character
+    local root = char and char:FindFirstChild("HumanoidRootPart")
+    if airWalkOn and root then
+        platform.Position   = Vector3.new(root.Position.X, platformY, root.Position.Z)
+        platform.CanCollide = true
+    else
+        platform.CanCollide = false
+    end
+end)
+table.insert(connections, rwConn)
+
+local mouseConn = UserInputService.InputBegan:Connect(function(input, gp)
+    if gp or not portalGunActive then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+    if isSpawning then return end
+
+    local mouse   = player:GetMouse()
+    local hitPart = mouse.Target
+    local hitPos  = mouse.Hit
+    local char    = player.Character
+    local root    = char and char:FindFirstChild("HumanoidRootPart")
+    if not (hitPos and root) then return end
+
+    isSpawning = true
+    wipeAllPortals()
+
+    if not hitPart then
+        airWalkOn           = true
+        platform.CanCollide = true
+
+        voidPlatform              = Instance.new("Part")
+        voidPlatform.Name         = "VoidBaseplate"
+        voidPlatform.Size         = Vector3.new(60, 1, 60)
+        voidPlatform.Position     = hitPos.Position
+        voidPlatform.Anchored     = true
+        voidPlatform.Transparency = 1
+        voidPlatform.CanCollide   = true
+        voidPlatform.Parent       = workspace
+        platformY                 = hitPos.Position.Y
+    end
+
+    local exitPortal     = createPortalInstance(CFrame.lookAt(hitPos.Position + Vector3.new(0, 3.5, 0), root.Position))
+    local entrancePortal = createPortalInstance(root.CFrame * CFrame.new(0, 0, -5))
+
+    entrancePortal.Touched:Connect(function(hit)
+        if isTeleporting or hit.Parent ~= char then return end
+        isTeleporting = true
+        task.spawn(function()
+            smartJumpToCFrame(root, exitPortal.CFrame * CFrame.new(0, 0, -6))
+            task.wait(TELEPORT_COOLDOWN)
+            isTeleporting = false
+        end)
+    end)
+
+    exitPortal.Touched:Connect(function(hit)
+        if isTeleporting or hit.Parent ~= char then return end
+        isTeleporting = true
+        task.spawn(function()
+            smartJumpToCFrame(root, entrancePortal.CFrame * CFrame.new(0, 0, -6))
+            task.wait(TELEPORT_COOLDOWN)
+            isTeleporting = false
+        end)
+    end)
+
+    task.wait(0.35)
+    isSpawning = false
+end)
+table.insert(connections, mouseConn)
+
+-- ════════════════════════════════════════════════════════════════════════════════
+--  Cleanup
+-- ════════════════════════════════════════════════════════════════════════════════
+local function fullCleanup()
+    wipeAllPortals()
+    if platform then platform:Destroy() end
+    stopMusic()
+    for _, c in ipairs(connections) do c:Disconnect() end
+    table.clear(connections)
+end
+
+getgenv().RickPortalCleanup = fullCleanup
